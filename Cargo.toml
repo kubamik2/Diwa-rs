@@ -1,0 +1,24 @@
+[package]
+name = "diwa_rs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rspotify = { version = "0.11.5", features = ["env-file", "client-ureq", "ureq-rustls-tls"], default-features = false }
+tokio = { version = "1.23.0", features = ["full"] }
+dotenv = { version = "0.15.0" }
+regex = "1"
+songbird = { version = "0.3.0", features = ["driver", "builtin-queue", "yt-dlp"] }
+poise = { version = "0.5.2", features = ["collector"] }
+serenity = { version = "0.11.5", features = ["builder", "cache", "client", "http", "model", "utils", "rustls_backend", "gateway", "voice", "rustls_backend", "collector"], default-features = false }
+rand = "0.8.5"
+futures = "0.3.26"
+typemap_rev = "0.3.0"
+uuid = "0.8.2"
+google-youtube3 = "*"
+serde = "^1.0"
+serde_json = "^1.0"
+iso8601 = "*"
+url = "*"
