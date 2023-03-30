@@ -115,8 +115,7 @@ pub async fn ytdl_search_metadata(query: &str) -> Result<Metadata, Error> {
 
     let value = serde_json::from_slice::<serde_json::Value>(&out.stdout)?;
 
-    let metadata = Metadata::from_ytdl_output(value);
-    Ok(metadata)
+    Ok(Metadata::from_ytdl_output(value))
 }
 
 pub enum LazyQueued {

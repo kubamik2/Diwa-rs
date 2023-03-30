@@ -3,20 +3,16 @@ pub mod youtube_api;
 pub mod error;
 pub mod convert_query;
 
-use std::time::Duration;
+use std::{ time::Duration, sync::Arc };
 use tokio::sync::Mutex;
 use serenity::model::channel::Message;
-use poise::reply::ReplyHandle;
-use google_youtube3::{YouTube, hyper::client::HttpConnector, hyper_rustls::HttpsConnector};
+use poise::{ reply::ReplyHandle, async_trait };
+use google_youtube3::{ YouTube, hyper::client::HttpConnector, hyper_rustls::HttpsConnector };
 use rspotify::ClientCredsSpotify;
-use songbird::{
-    input::Metadata,
-    tracks::TrackHandle
-};
-use spotify_to_query::{TrackData, extract_album_queries, extract_playlist_queries, extract_track_query};
-use youtube_api::{extract_playlist_video_metadata, extract_video_metadata};
-use error::{Error, LibError};
-use poise::async_trait;
+use songbird::{ input::Metadata, tracks::TrackHandle, Call };
+use spotify_to_query::{ TrackData, extract_album_queries, extract_playlist_queries, extract_track_query };
+use youtube_api::{ extract_playlist_video_metadata, extract_video_metadata };
+use error::{ Error, LibError };
 
 #[derive(Debug)]
 pub struct GeneralError {
@@ -106,6 +102,16 @@ pub struct LazyMetadata {
     pub source_url: String
 }
 
+impl LazyMetadata {
+    pub fn empty() -> Self {
+        Self { title: String::new(), duration: Duration::ZERO, source_url: String::new() }
+    }
+
+    pub fn lossy_from_metadata(value: Metadata) -> Self {
+        Self { title: value.title.unwrap_or("".to_owned()), duration: value.duration.unwrap_or(Duration::ZERO), source_url: value.source_url.unwrap_or("".to_owned()) }
+    }
+}
+
 impl songbird::typemap::TypeMapKey for LazyMetadata {
     type Value = LazyMetadata;
 }
@@ -152,16 +158,13 @@ impl LazyMetadataTrait for TrackHandle {
     } 
 }
 
-use songbird::Call;
-use std::sync::Arc;
 pub struct MetadataEventHandler {
     pub handler: Arc<Mutex<Call>>
 }
 
-use songbird::EventContext;
 #[async_trait]
 impl songbird::events::EventHandler for MetadataEventHandler {
-    async fn act(&self, ctx: &songbird::EventContext<'_>) -> Option<songbird::Event> {
+    async fn act(&self, _: &songbird::EventContext<'_>) -> Option<songbird::Event> {
         let handler_guard = self.handler.lock().await;
         if let Some(mut track) = handler_guard.queue().current() {
             track.generate_lazy_metadata().await;
