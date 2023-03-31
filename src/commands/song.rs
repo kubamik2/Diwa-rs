@@ -1,7 +1,8 @@
 use diwa_rs::{
     Context,
     error::Error,
-    LazyMetadataTrait
+    LazyMetadataTrait,
+    format_duration
 };
 use poise::ReplyHandle;
 
@@ -43,13 +44,15 @@ pub async fn song(ctx: Context<'_>) -> Result<(), Error> {
 }
 
 async fn send_msg<'a>(ctx: &'a Context<'_>, title: String, source_url: String, play_time: Duration, duration: Duration) -> Result<ReplyHandle<'a>, Error> {
+    let formatted_duration = format_duration(duration, None);
+    let formatted_play_time = format_duration(play_time, Some(formatted_duration.len() as u32));
     let reply_handle = ctx.send(
         |msg| msg
         .ephemeral(true)
         .allowed_mentions(|s| s.replied_user(true))
         .embed(|embed| embed
             .title("Currently Playing:")
-            .description(format!("[{}]({}) | {}/{}", title, source_url, play_time.as_secs(), duration.as_secs()))
+            .description(format!("[{}]({}) | {}/{}", title, source_url, formatted_play_time, formatted_duration))
             .color(Color::PURPLE))).await?;
     Ok(reply_handle)
 }

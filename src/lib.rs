@@ -2,6 +2,7 @@ pub mod spotify_to_query;
 pub mod youtube_api;
 pub mod error;
 pub mod convert_query;
+pub mod youtube_scraper;
 
 use std::{ time::Duration, sync::Arc };
 use tokio::sync::Mutex;
@@ -13,6 +14,7 @@ use songbird::{ input::Metadata, tracks::TrackHandle, Call };
 use spotify_to_query::{ TrackData, extract_album_queries, extract_playlist_queries, extract_track_query };
 use youtube_api::{ extract_playlist_video_metadata, extract_video_metadata };
 use error::{ Error, LibError };
+use youtube_scraper::search;
 
 #[derive(Debug)]
 pub struct GeneralError {
@@ -96,13 +98,13 @@ impl Data {
 pub type Context<'a> = poise::Context<'a, Data, Error>;
 
 #[derive(Debug, Clone)]
-pub struct LazyMetadata {
+pub struct MiniMetadata {
     pub title: String,
     pub duration: Duration,
     pub source_url: String
 }
 
-impl LazyMetadata {
+impl MiniMetadata {
     pub fn empty() -> Self {
         Self { title: String::new(), duration: Duration::ZERO, source_url: String::new() }
     }
@@ -112,11 +114,11 @@ impl LazyMetadata {
     }
 }
 
-impl songbird::typemap::TypeMapKey for LazyMetadata {
-    type Value = LazyMetadata;
+impl songbird::typemap::TypeMapKey for MiniMetadata {
+    type Value = MiniMetadata;
 }
 
-impl TryFrom<Metadata> for LazyMetadata {
+impl TryFrom<Metadata> for MiniMetadata {
     type Error = LibError;
     fn try_from(value: Metadata) -> Result<Self, Self::Error> {
         Ok(Self { title: value.title.ok_or(missing_value!("title"))?, duration: value.duration.ok_or(missing_value!("duration"))?, source_url: value.source_url.ok_or(missing_value!("source_url"))? })
@@ -125,20 +127,20 @@ impl TryFrom<Metadata> for LazyMetadata {
 
 #[async_trait]
 pub trait LazyMetadataTrait {
-    async fn read_lazy_metadata(&self) -> Option<LazyMetadata>;
-    async fn write_lazy_metadata(&mut self, metadata: LazyMetadata);
+    async fn read_lazy_metadata(&self) -> Option<MiniMetadata>;
+    async fn write_lazy_metadata(&mut self, metadata: MiniMetadata);
     async fn generate_lazy_metadata(&mut self);
     fn is_lazy(&self) -> bool;
 }
 
 #[async_trait]
 impl LazyMetadataTrait for TrackHandle {
-    async fn read_lazy_metadata(&self) -> Option<LazyMetadata> {
-        self.typemap().read().await.get::<LazyMetadata>().cloned()
+    async fn read_lazy_metadata(&self) -> Option<MiniMetadata> {
+        self.typemap().read().await.get::<MiniMetadata>().cloned()
     }
 
-    async fn write_lazy_metadata(&mut self, metadata: LazyMetadata) {
-        self.typemap().write().await.insert::<LazyMetadata>(metadata);
+    async fn write_lazy_metadata(&mut self, metadata: MiniMetadata) {
+        self.typemap().write().await.insert::<MiniMetadata>(metadata);
     }
 
     fn is_lazy(&self) -> bool {
@@ -148,11 +150,13 @@ impl LazyMetadataTrait for TrackHandle {
     async fn generate_lazy_metadata(&mut self) {
         if self.is_lazy() {
             if let Some(ref query) = self.metadata().title {
-                if let Ok(metadata) = convert_query::ytdl_search_metadata(&query).await {
-                    if let Ok(lazy_metadata) = LazyMetadata::try_from(metadata) {
-                        let _ = self.write_lazy_metadata(lazy_metadata).await;
-                    }
+                let (title, video_id, duration) = search(query).await;
+                let mut source_url = String::new();
+                if let Some(video_id) = video_id {
+                    source_url = format!("https://youtu.be/{}", video_id);
                 }
+                let metadata = MiniMetadata {title: title.unwrap_or(String::new()), duration: duration.unwrap_or(Duration::ZERO), source_url };
+                self.write_lazy_metadata(metadata).await
             }
         }
     } 
@@ -171,4 +175,22 @@ impl songbird::events::EventHandler for MetadataEventHandler {
         }
         None
     }   
+}
+
+pub fn format_duration(duration: Duration, length: Option<u32>) -> String {
+    let s = duration.as_secs() % 60;
+    let m = duration.as_secs() / 60 % 60;
+    let h = duration.as_secs() / 3600 % 24;
+    let d = duration.as_secs() / 86400;
+    let mut formatted_duration = format!("{:0>2}:{:0>2}:{:0>2}:{:0>2}", d, h, m, s);
+    if let Some(length) = length {
+        formatted_duration = formatted_duration.split_at(formatted_duration.len() - length as usize).1.to_owned();
+    } else {
+        while formatted_duration.len() > 5 {
+            if let Some(stripped_formatted_duration) = formatted_duration.strip_prefix("00:") {
+                formatted_duration = stripped_formatted_duration.to_owned();
+            }
+        }
+    }
+    formatted_duration
 }

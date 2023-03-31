@@ -2,15 +2,16 @@ use diwa_rs::{
     Context,
     error::Error,
     LazyMetadataTrait,
-    LazyMetadata
+    MiniMetadata,
+    format_duration
 };
-use poise::serenity_prelude::ReactionType;
+use poise::serenity_prelude::{ReactionType, MessageComponentInteraction};
 
 use std::{
     time::Duration,
     sync::Arc
 };
-use serenity::builder::CreateEmbed;
+use serenity::builder::{CreateEmbed, CreateActionRow};
 use tokio::{
     task::{spawn, JoinHandle},
     sync::Mutex
@@ -21,7 +22,7 @@ use futures::stream::*;
 
 static TRACKS_PER_PAGE: u32 = 6;
 
-#[poise::command(slash_command, prefix_command)]
+#[poise::command(slash_command, prefix_command, aliases("q"), guild_only)]
 pub async fn queue(ctx: Context<'_>, page: Option<u32>) -> Result<(), Error> {
     if let Some(guild) = ctx.guild() {
         let manager = songbird::get(&ctx.serenity_context()).await.unwrap();
@@ -29,46 +30,32 @@ pub async fn queue(ctx: Context<'_>, page: Option<u32>) -> Result<(), Error> {
             ctx.defer().await;
             let mut page = page.unwrap_or(0);
             let (queue_embed, last_page) = assemble_embed(handler.clone(), page).await;
+            let mut last_page = last_page;
             let reply_handle = ctx.send(
                 |msg| msg
                 .allowed_mentions(|s| s.replied_user(true))
                 .embed(|embed| {embed.clone_from(&queue_embed); embed})
-                .components(|components| components.create_action_row(|row| 
-                    row.create_button(|button| button.custom_id("prev").emoji(ReactionType::Unicode("◀️".to_owned())).disabled(page == 0))
-                    .create_button(|button| button.custom_id("next").emoji(ReactionType::Unicode("▶️".to_owned())).disabled(page == last_page))
-                ))
+                .components(|components| components.set_action_row(create_buttons(page, last_page)))
             ).await?;
 
-            let collector = reply_handle.message().await?.await_component_interactions(ctx).timeout(Duration::from_secs(30)).author_id(ctx.author().id).build();
+            let mut collector = reply_handle.message().await?.await_component_interactions(ctx).timeout(Duration::from_secs(30)).author_id(ctx.author().id).build();
             
-            collector.for_each(|message_collector| {
-                let cloned_handler = handler.clone();
-                async move {
-                    match message_collector.data.custom_id.as_str() {
-                        "prev" => {
-                            page -= 1;
-                            let channel_id = message_collector.message.channel_id.0;
-                            let message_id = message_collector.message.id.0;
-                            if let Ok(mut message) = ctx.serenity_context().http.get_message(channel_id, message_id).await {
-                                let (new_queue_embed, last_page) = assemble_embed(cloned_handler, page).await;
-                                message.edit(ctx, |f| f.set_embed(new_queue_embed)).await;
-                                ctx.defer().await;
-                            }
-                        },
-                        "next" => {
-                            page += 1;
-                            let channel_id = message_collector.message.channel_id.0;
-                            let message_id = message_collector.message.id.0;
-                            if let Ok(mut message) = ctx.serenity_context().http.get_message(channel_id, message_id).await {
-                                let (new_queue_embed, last_page) = assemble_embed(cloned_handler, page).await;
-                                message.edit(ctx, |f| f.set_embed(new_queue_embed)).await;
-                                ctx.defer().await;
-                            }
-                        },
-                        _ => ()
+            while let Some(message_collector) = collector.next().await {
+                match message_collector.data.custom_id.as_str() {
+                    "prev" => {
+                        page -= 1;
+                        update_queue_embed(page, &mut last_page, message_collector, ctx, handler.clone()).await;
+                    },
+                    "next" => {
+                        page += 1;
+                        update_queue_embed(page, &mut last_page, message_collector, ctx, handler.clone()).await;
+                    },
+                    "reload" => {
+                        update_queue_embed(page, &mut last_page, message_collector, ctx, handler.clone()).await;
                     }
+                    _ => ()
                 }
-            }).await;
+            }
 
             ctx.data().delete_after_delay(reply_handle, Duration::ZERO).await;
         }
@@ -76,7 +63,7 @@ pub async fn queue(ctx: Context<'_>, page: Option<u32>) -> Result<(), Error> {
     Ok(())
 }
 
-pub async fn extract_track_data(track: TrackHandle, include_play_time: bool) -> (LazyMetadata, Option<Duration>) {
+pub async fn extract_track_data(track: TrackHandle, include_play_time: bool) -> (MiniMetadata, Option<Duration>) {
     let mut play_time = None;
     if include_play_time {
         play_time = track.get_info().await.map(|info| Some(info.play_time)).unwrap_or(None);
@@ -85,18 +72,18 @@ pub async fn extract_track_data(track: TrackHandle, include_play_time: bool) -> 
         if let Some(metadata) = track.read_lazy_metadata().await {
             return (metadata, play_time);
         } else {
-            return (LazyMetadata::empty(), play_time);
+            return (MiniMetadata::empty(), play_time);
         }
         
     } else {
-        return (LazyMetadata::lossy_from_metadata(track.metadata().clone()), play_time);
+        return (MiniMetadata::lossy_from_metadata(track.metadata().clone()), play_time);
     }
 }
 
 pub async fn assemble_embed(handler: Arc<Mutex<Call>>, page: u32) -> (CreateEmbed, u32) {
     search_burst(handler.clone(), page).await;
     let handler_quard = handler.lock().await;
-    let mut tracks_data: Vec<(LazyMetadata, Option<Duration>)> = vec![];
+    let mut tracks_data: Vec<(MiniMetadata, Option<Duration>)> = vec![];
     let mut index = 0;
     let mut queue = handler_quard.queue().current_queue().into_iter().skip(1 + (TRACKS_PER_PAGE * page) as usize);
     if let Some(current) = handler_quard.queue().current() {
@@ -127,7 +114,9 @@ pub async fn search_burst(handler: Arc<Mutex<Call>>, page: u32) {
         let mut cloned_track = track.clone();
         handles.push(spawn(async move {
             if cloned_track.is_lazy() {
-                cloned_track.generate_lazy_metadata().await;
+                if let None = cloned_track.read_lazy_metadata().await {
+                    cloned_track.generate_lazy_metadata().await;
+                }
             }
         }));
         index += 1;
@@ -165,16 +154,21 @@ pub fn format_track(title: String, source_url: String, duration: Duration, play_
     formatted_track
 }
 
-pub fn format_duration(duration: Duration, length: Option<u32>) -> String {
-    let s = duration.as_secs() % 60;
-    let m = duration.as_secs() / 60 % 60;
-    let h = duration.as_secs() / 3600 % 24;
-    let d = duration.as_secs() / 86400;
-    let mut formatted_duration = format!("{:0>2}:{:0>2}:{:0>2}:{:0>2}", d, h, m, s);
-    if let Some(length) = length {
-        formatted_duration = formatted_duration.split_at(formatted_duration.len() - length as usize).1.to_owned();
-    } else {
-        formatted_duration = formatted_duration.trim_start_matches("00:").to_owned();
+pub fn create_buttons(page: u32, last_page: u32) -> CreateActionRow {
+    let mut components = CreateActionRow::default();
+    components.create_button(|button| button.custom_id("prev").emoji(ReactionType::Unicode("◀️".to_owned())).disabled(page == 0));
+    components.create_button(|button| button.custom_id("next").emoji(ReactionType::Unicode("▶️".to_owned())).disabled(page + 1 == last_page));
+    components.create_button(|button| button.custom_id("reload").emoji(ReactionType::Unicode("🔄".to_owned())));
+    components
+}
+
+pub async fn update_queue_embed(page: u32, last_page: &mut u32, message_collector: Arc<MessageComponentInteraction>, ctx: Context<'_>, handler: Arc<Mutex<Call>>) {
+    let channel_id = message_collector.message.channel_id.0;
+    let message_id = message_collector.message.id.0;
+    if let Ok(mut message) = ctx.serenity_context().http.get_message(channel_id, message_id).await {
+        let (new_queue_embed, new_last_page) = assemble_embed(handler, page).await;
+        *last_page = new_last_page;
+        message.edit(ctx, |f| f.set_embed(new_queue_embed).components(|components| components.set_action_row(create_buttons(page, *last_page)))).await;
+        message_collector.defer(ctx).await;
     }
-    formatted_duration
 }
