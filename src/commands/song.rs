@@ -2,13 +2,12 @@ use diwa_rs::{
     Context,
     error::Error,
     LazyMetadataTrait,
-    format_duration
+    utils::format_duration
 };
 use poise::ReplyHandle;
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use serenity::utils::Color;
-use futures::stream::*;
 
 #[poise::command(slash_command, prefix_command)]
 pub async fn song(ctx: Context<'_>) -> Result<(), Error> {
@@ -16,7 +15,6 @@ pub async fn song(ctx: Context<'_>) -> Result<(), Error> {
         let manager = songbird::get(&ctx.serenity_context()).await.unwrap();
         if let Some(handler) = manager.get(guild.id) {
             let handler_guard = handler.lock().await;
-            if handler_guard.queue().len() == 0 {return Ok(());}
             let current_track = handler_guard.queue().current();
             drop(handler_guard);
             if let Some(current_track) = current_track {
@@ -25,7 +23,7 @@ pub async fn song(ctx: Context<'_>) -> Result<(), Error> {
                         if let Some(metadata) = current_track.read_lazy_metadata().await {
                             let play_time = current_track_state.play_time;
                             let reply_handle = send_msg(&ctx, metadata.title, metadata.source_url, play_time, metadata.duration).await?;
-                            ctx.data().delete_after_delay(reply_handle, Duration::from_secs(10)).await;
+                            ctx.data().delete_after_delay(reply_handle, Duration::from_secs(15)).await;
                         }
                     } else {
                         let metadata = current_track.metadata();
@@ -34,9 +32,20 @@ pub async fn song(ctx: Context<'_>) -> Result<(), Error> {
                         let duration = metadata.duration.clone().unwrap_or(Duration::ZERO);
                         let play_time = current_track_state.play_time;
                         let reply_handle = send_msg(&ctx, title, source_url, play_time, duration).await?;
-                        ctx.data().delete_after_delay(reply_handle, Duration::from_secs(10)).await;
+                        ctx.data().delete_after_delay(reply_handle, Duration::from_secs(15)).await;
                     }
                 }
+            } else {
+                let reply_handle = ctx.send(
+                    |msg| msg
+                    .ephemeral(true)
+                    .allowed_mentions(|s| s.replied_user(true))
+                    .embed(|embed| embed
+                        .title("Currently Playing:")
+                        .description("*Nothing*")
+                        .color(Color::PURPLE))
+                    ).await?;
+                ctx.data().delete_after_delay(reply_handle, Duration::from_secs(15)).await;
             }
         }
     }
@@ -53,6 +62,7 @@ async fn send_msg<'a>(ctx: &'a Context<'_>, title: String, source_url: String, p
         .embed(|embed| embed
             .title("Currently Playing:")
             .description(format!("[{}]({}) | {}/{}", title, source_url, formatted_play_time, formatted_duration))
-            .color(Color::PURPLE))).await?;
+            .color(Color::PURPLE))
+        ).await?;
     Ok(reply_handle)
 }

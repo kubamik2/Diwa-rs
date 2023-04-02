@@ -3,7 +3,7 @@ use diwa_rs::{
     error::Error,
     LazyMetadataTrait,
     MiniMetadata,
-    format_duration
+    utils::format_duration
 };
 use poise::serenity_prelude::{ReactionType, MessageComponentInteraction};
 
@@ -16,7 +16,7 @@ use tokio::{
     task::{spawn, JoinHandle},
     sync::Mutex
 };
-use songbird::{Call, tracks::TrackHandle};
+use songbird::{Call, tracks::{TrackHandle, LoopState}};
 use serenity::utils::Color;
 use futures::stream::*;
 
@@ -27,7 +27,6 @@ pub async fn queue(ctx: Context<'_>, page: Option<u32>) -> Result<(), Error> {
     if let Some(guild) = ctx.guild() {
         let manager = songbird::get(&ctx.serenity_context()).await.unwrap();
         if let Some(handler) = manager.get(guild.id) {
-            ctx.defer().await;
             let mut page = page.unwrap_or(0);
             let (queue_embed, last_page) = assemble_embed(handler.clone(), page).await;
             let mut last_page = last_page;
@@ -86,8 +85,16 @@ pub async fn assemble_embed(handler: Arc<Mutex<Call>>, page: u32) -> (CreateEmbe
     let mut tracks_data: Vec<(MiniMetadata, Option<Duration>)> = vec![];
     let mut index = 0;
     let mut queue = handler_quard.queue().current_queue().into_iter().skip(1 + (TRACKS_PER_PAGE * page) as usize);
-    if let Some(current) = handler_quard.queue().current() {
-        tracks_data.push(extract_track_data(current, true).await);
+    let mut is_looping = false;
+    if let Some(current_track) = handler_quard.queue().current() {
+        if let Ok(info) = current_track.get_info().await {
+            if let LoopState::Infinite = info.loops {
+                is_looping = true;
+            } else {
+                is_looping = false;
+            }
+        }
+        tracks_data.push(extract_track_data(current_track, true).await);
     }
     while let Some(track) = (&mut queue).next() {
         if index == TRACKS_PER_PAGE {break;}
@@ -99,8 +106,9 @@ pub async fn assemble_embed(handler: Arc<Mutex<Call>>, page: u32) -> (CreateEmbe
     for data in tracks_data {
         formatted_tracks.push(format_track(data.0.title, data.0.source_url, data.0.duration, data.1))
     }
-    let last_page = ((handler_quard.queue().len() - 1) as f32 / TRACKS_PER_PAGE as f32).ceil() as u32;
-    (create_queue_embed(formatted_tracks, page, last_page, handler_quard.queue().len(), false), last_page)
+
+    let last_page = ((handler_quard.queue().len() as f32 / TRACKS_PER_PAGE as f32).ceil() - 1.0).max(0.0) as u32;
+    (create_queue_embed(formatted_tracks, page, last_page, handler_quard.queue().len(), is_looping), last_page)
 }
 
 pub async fn search_burst(handler: Arc<Mutex<Call>>, page: u32) {
@@ -126,15 +134,21 @@ pub async fn search_burst(handler: Arc<Mutex<Call>>, page: u32) {
     }
 }
 
-pub fn create_queue_embed(tracks: Vec<String>, page: u32, last_page: u32, tracks_len: usize, loop_on: bool) -> CreateEmbed {
+pub fn create_queue_embed(tracks: Vec<String>, page: u32, last_page: u32, tracks_len: usize, is_looping: bool) -> CreateEmbed {
     let mut embed = CreateEmbed::default();
-    embed.title("Queue").footer(|footer| footer.text(format!("Page: {}/{}  tracks: {}  loop: {}", page + 1, last_page.max(1), tracks_len, loop_on)));
+    embed.title("Queue").footer(|footer| footer.text(format!("Page: {}/{}  tracks: {}  loop: {}", page + 1, last_page.max(1), tracks_len, is_looping)));
+    let mut next_up = String::new();
     if let Some(current_track) = tracks.first() {
         embed.field("Currently Playing:", current_track, false);
-    }   
-    let mut next_up = String::new();
-    for (i, track) in tracks.iter().enumerate().skip(1) {
-        next_up += format!("{}. {}\n", i + (page * TRACKS_PER_PAGE) as usize, track).as_str();
+    } else {
+        embed.field("Currently Playing:", "*Nothing*", false);
+    }
+    if tracks.len() > 1 {
+        for (i, track) in tracks.iter().enumerate().skip(1) {
+            next_up += format!("{}. {}\n", i + (page * TRACKS_PER_PAGE) as usize, track).as_str();
+        }
+    } else {
+        next_up = "*Nothing*".to_string();
     }
     embed.field("Next Up:", next_up, false);
     embed.color(Color::PURPLE);
@@ -157,7 +171,7 @@ pub fn format_track(title: String, source_url: String, duration: Duration, play_
 pub fn create_buttons(page: u32, last_page: u32) -> CreateActionRow {
     let mut components = CreateActionRow::default();
     components.create_button(|button| button.custom_id("prev").emoji(ReactionType::Unicode("◀️".to_owned())).disabled(page == 0));
-    components.create_button(|button| button.custom_id("next").emoji(ReactionType::Unicode("▶️".to_owned())).disabled(page + 1 == last_page));
+    components.create_button(|button| button.custom_id("next").emoji(ReactionType::Unicode("▶️".to_owned())).disabled(page + 1 >= last_page));
     components.create_button(|button| button.custom_id("reload").emoji(ReactionType::Unicode("🔄".to_owned())));
     components
 }

@@ -5,11 +5,7 @@ use diwa_rs::{
 };
 
 #[poise::command(slash_command, prefix_command)]
-pub async fn skip(ctx: Context<'_>) -> Result<(), Error> {
-    skip_inner(ctx).await
-}
-
-pub async fn skip_inner(ctx: Context<'_>) -> Result<(), Error> {
+pub async fn stop(ctx: Context<'_>) -> Result<(), Error> {
     if let Some(guild) = ctx.guild() {
         if let Some(user_voice_state) = guild.voice_states.get(&ctx.author().id) {
             let manager = songbird::get(&ctx.serenity_context()).await.unwrap();
@@ -20,10 +16,9 @@ pub async fn skip_inner(ctx: Context<'_>) -> Result<(), Error> {
                     send_error(&ctx, "You're In a Different Channel").await;
                     return Ok(());
                 }
-
-                handler_guard.queue().skip()?;
+                handler_guard.queue().current().unwrap().stop();
+                handler_guard.queue().modify_queue(|queue| queue.clear());
                 drop(handler_guard);
-                send_reply(&ctx, "Track Skipped").await;
             }
         }
     }

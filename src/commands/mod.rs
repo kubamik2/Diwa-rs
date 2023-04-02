@@ -3,3 +3,7 @@ pub mod song;
 pub mod leave;
 pub mod skip;
 pub mod queue;
+pub mod pause;
+pub mod resume;
+pub mod loopc;
+pub mod stop;

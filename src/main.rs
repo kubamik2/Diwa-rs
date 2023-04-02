@@ -49,7 +49,11 @@ async fn main() {
                 commands::song::song(),
                 commands::leave::leave(),
                 commands::skip::skip(),
-                commands::queue::queue()
+                commands::queue::queue(),
+                commands::loopc::loopc(),
+                commands::pause::pause(),
+                commands::resume::resume(),
+                commands::stop::stop()
             ],
             prefix_options: poise::PrefixFrameworkOptions {
                 prefix: Some("-".to_owned()),

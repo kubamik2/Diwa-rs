@@ -3,18 +3,20 @@ pub mod youtube_api;
 pub mod error;
 pub mod convert_query;
 pub mod youtube_scraper;
+pub mod utils;
 
 use std::{ time::Duration, sync::Arc };
 use tokio::sync::Mutex;
 use serenity::model::channel::Message;
-use poise::{ reply::ReplyHandle, async_trait };
+use poise::{ reply::ReplyHandle, async_trait, serenity_prelude::{ChannelId, Http, Color, CreateEmbed, User} };
 use google_youtube3::{ YouTube, hyper::client::HttpConnector, hyper_rustls::HttpsConnector };
 use rspotify::ClientCredsSpotify;
-use songbird::{ input::Metadata, tracks::TrackHandle, Call };
+use songbird::{ input::Metadata, tracks::TrackHandle, Call, EventContext };
 use spotify_to_query::{ TrackData, extract_album_queries, extract_playlist_queries, extract_track_query };
 use youtube_api::{ extract_playlist_video_metadata, extract_video_metadata };
 use error::{ Error, LibError };
 use youtube_scraper::search;
+use utils::{create_now_playing_embed, format_duration};
 
 #[derive(Debug)]
 pub struct GeneralError {
@@ -136,7 +138,8 @@ pub trait LazyMetadataTrait {
 #[async_trait]
 impl LazyMetadataTrait for TrackHandle {
     async fn read_lazy_metadata(&self) -> Option<MiniMetadata> {
-        self.typemap().read().await.get::<MiniMetadata>().cloned()
+        let res = self.typemap().read().await.get::<MiniMetadata>().cloned();
+        res
     }
 
     async fn write_lazy_metadata(&mut self, metadata: MiniMetadata) {
@@ -163,34 +166,63 @@ impl LazyMetadataTrait for TrackHandle {
 }
 
 pub struct MetadataEventHandler {
-    pub handler: Arc<Mutex<Call>>
+    pub handler: Arc<Mutex<Call>>,
+    pub channel_id: ChannelId,
+    pub http: Arc<Http>
 }
 
 #[async_trait]
 impl songbird::events::EventHandler for MetadataEventHandler {
-    async fn act(&self, _: &songbird::EventContext<'_>) -> Option<songbird::Event> {
-        let handler_guard = self.handler.lock().await;
-        if let Some(mut track) = handler_guard.queue().current() {
-            track.generate_lazy_metadata().await;
+    async fn act(&self, ctx: &songbird::EventContext<'_>) -> Option<songbird::Event> {
+        if let EventContext::Track(slice) = ctx {
+            if let Some((track_state, _)) = slice.get(0) {
+                if let Some(mut current_track) = self.handler.lock().await.queue().current() {
+                    if track_state.play_time.as_secs() == 0 {
+                        current_track.generate_lazy_metadata().await;
+                        if let Some(metadata) = current_track.read_lazy_metadata().await {
+                            let added_by = current_track.read_added_by().await;
+                            self.channel_id.send_message(&self.http, |message| message.set_embed(create_now_playing_embed(metadata, added_by))).await;
+                        }
+                    }
+                }
+                
+            }
         }
+        
         None
     }   
 }
 
-pub fn format_duration(duration: Duration, length: Option<u32>) -> String {
-    let s = duration.as_secs() % 60;
-    let m = duration.as_secs() / 60 % 60;
-    let h = duration.as_secs() / 3600 % 24;
-    let d = duration.as_secs() / 86400;
-    let mut formatted_duration = format!("{:0>2}:{:0>2}:{:0>2}:{:0>2}", d, h, m, s);
-    if let Some(length) = length {
-        formatted_duration = formatted_duration.split_at(formatted_duration.len() - length as usize).1.to_owned();
-    } else {
-        while formatted_duration.len() > 5 {
-            if let Some(stripped_formatted_duration) = formatted_duration.strip_prefix("00:") {
-                formatted_duration = stripped_formatted_duration.to_owned();
-            }
-        }
+#[derive(Clone, Debug)]
+pub struct MiniUser {
+    pub id: u64,
+    pub name: String,
+    pub avatar_url: Option<String>
+}
+
+impl From<&User> for MiniUser {
+    fn from(value: &User) -> Self {
+        Self { id: value.id.0, name: value.name.clone(), avatar_url: value.avatar_url() }
     }
-    formatted_duration
+}
+
+impl songbird::typemap::TypeMapKey for MiniUser {
+    type Value = MiniUser;
+}
+
+#[async_trait]
+pub trait AddedBy {
+    async fn read_added_by(&self) -> Option<MiniUser>;
+    async fn write_added_by<'a>(&mut self, user: &'a User);
+}
+
+#[async_trait]
+impl AddedBy for TrackHandle {
+    async fn read_added_by(&self) -> Option<MiniUser> {
+        self.typemap().read().await.get::<MiniUser>().map(|inner| inner.clone())
+    }
+    
+    async fn write_added_by<'a>(&mut self, user: &'a User) {
+        self.typemap().write().await.insert::<MiniUser>(user.into());
+    }
 }
