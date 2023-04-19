@@ -1,13 +1,14 @@
-//use std::error::Error;
+
+mod youtube_media;
 use crate::{
     missing_value, url_error, Data,
     error::Error
 };
-
+use youtube_media::YoutubeStreamMediaSource;
 use url::Url;
 use songbird::{
     input::{
-        Metadata, Input, ytdl_search, Codec, Container, ytdl, Restartable,
+        Metadata, Input, ytdl_search, Codec, Container, Restartable,
         restartable::Restart
     }
 };
@@ -25,7 +26,7 @@ pub enum Media {
     Search(String)
 }
 
-pub fn extract_media(data: &Data, query: &str) -> Result<Media, Error> {
+pub fn extract_media(query: &str) -> Result<Media, Error> {
     let url = Url::parse(query.into())?;
     return Ok(match url.domain().unwrap() {
         "www.youtube.com" | "youtube.com" => {
@@ -68,7 +69,7 @@ pub fn extract_media(data: &Data, query: &str) -> Result<Media, Error> {
 }
 
 pub async fn convert_query(data: &Data, query: &str) -> Result<Vec<Input>, Error> {
-    let media = extract_media(data, query)?;
+    let media = extract_media(query)?;
     
     return Ok(match media {
         Media::YouTubeVideo(id) => {
@@ -94,7 +95,7 @@ pub async fn convert_query(data: &Data, query: &str) -> Result<Vec<Input>, Error
             let mut inputs: Vec<Input> = vec![];
 
             for track_data in playlist_data {
-                let restartable = Restartable::new(LazyQueued::Lazier(format!("{} by {}", track_data.title, track_data.artists.join(", "))), true).await?;
+                let restartable = Restartable::new(LazyQueued::LazySoundCloudQuery(format!("{} by {}", track_data.title, track_data.artists.join(", "))), true).await?;
                 inputs.push(restartable.into());
             }
             inputs
@@ -120,7 +121,7 @@ pub async fn ytdl_search_metadata(query: &str) -> Result<Metadata, Error> {
 
 pub enum LazyQueued {
     Lazy(Metadata),
-    Lazier(String)
+    LazySoundCloudQuery(String)
 }
 
 impl LazyQueued {
@@ -131,19 +132,21 @@ impl LazyQueued {
         Ok(LazyQueued::Lazy(metadata))
     }
 
-    fn new_lazier(query: String) -> Result<Self, Error> {
-        Ok(LazyQueued::Lazier(query))
+    fn new_lazy_soundcloud_query(query: String) -> Result<Self, Error> {
+        Ok(LazyQueued::LazySoundCloudQuery(query))
     }
 }
 
 #[async_trait]
 impl Restart for LazyQueued {
-    async fn call_restart(&mut self, time: Option<std::time::Duration>) -> songbird::input::error::Result<Input> {
+    async fn call_restart(&mut self, _: Option<std::time::Duration>) -> songbird::input::error::Result<Input> {
         match *self {
             LazyQueued::Lazy(ref metadata) => {
-                return ytdl(metadata.source_url.clone().unwrap()).await;
+                let media = YoutubeStreamMediaSource::new("zSwcTiurwwk").await.unwrap();
+                let res = Input::new(true, songbird::input::Reader::Extension(Box::new(media)), songbird::input::Codec::FloatPcm, songbird::input::Container::Raw, None);
+                return Ok(res);
             },
-            LazyQueued::Lazier(ref search_query) => {
+            LazyQueued::LazySoundCloudQuery(ref search_query) => {
                 return ytdl_search(search_query).await;
             }
         }
@@ -154,7 +157,7 @@ impl Restart for LazyQueued {
             LazyQueued::Lazy(ref metadata) => {
                 return Ok((Some(metadata.clone()), Codec::FloatPcm, Container::Raw));
             },
-            LazyQueued::Lazier(ref search_query) => {
+            LazyQueued::LazySoundCloudQuery(ref search_query) => {
                 let mut metadata = Metadata::default();
                 metadata.channels = Some(2);
                 metadata.sample_rate = Some(48000);
@@ -164,4 +167,140 @@ impl Restart for LazyQueued {
             }
         }
     }
+}
+use songbird::input::children_to_reader;
+fn ffmpeg(url: &str) -> songbird::input::error::Result<Input> {
+    let ffmpeg_args = [
+        "-f",
+        "s16le",
+        "-ac",
+        "2",
+        "-ar",
+        "48000",
+        "-acodec",
+        "pcm_f32le",
+        "-",
+    ];
+
+    let ffmpeg = std::process::Command::new("ffmpeg")
+        .arg("-i")
+        .arg("-")
+        .args(&ffmpeg_args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    Ok(Input::new(true, children_to_reader::<f32>(vec![ffmpeg]), Codec::FloatPcm, Container::Raw, None))
+}
+
+pub fn ytdl2(uri: &str) -> songbird::input::error::Result<Input> {
+    let ytdl_args = [
+        "-f",
+        "webm[abr>0]/bestaudio/best",
+        "-R",
+        "infinite",
+        "--no-playlist",
+        "--ignore-config",
+        "--no-warnings",
+        uri,
+        "-o",
+        "-",
+    ];
+
+    let ffmpeg_args = [
+        "-f",
+        "s16le",
+        "-ac",
+        "2",
+        "-ar",
+        "48000",
+        "-acodec",
+        "pcm_f32le",
+        "-",
+    ];
+
+    let mut youtube_dl = std::process::Command::new("yt-dlp")
+        .args(&ytdl_args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    let taken_stdout = youtube_dl.stdout.take().ok_or(songbird::input::error::Error::Stdout)?;
+
+    let mut ffmpeg = std::process::Command::new("ffmpeg")
+        .arg("-i")
+        .arg("-")
+        .args(&ffmpeg_args)
+        .stdin(taken_stdout)
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    Ok(Input::new(
+        true,
+        children_to_reader::<f32>(vec![youtube_dl, ffmpeg]),
+        Codec::FloatPcm,
+        Container::Raw,
+        None,
+    ))
+}
+
+pub fn ytdl3(uri: &str) -> songbird::input::error::Result<Input> {
+    let ytdl_args = [
+        "-f",
+        "webm[abr>0]/bestaudio/best",
+        "-R",
+        "infinite",
+        "--no-playlist",
+        "--ignore-config",
+        "--no-warnings",
+        uri,
+        "-o",
+        r"D:\temp.mp3",
+    ];
+
+    let ffmpeg_args = [
+        "-i",
+        r"D:\temp.mp3",
+        "-f",
+        "s16le",
+        "-ac",
+        "2",
+        "-ar",
+        "48000",
+        "-acodec",
+        "pcm_f32le",
+        "-",
+    ];
+
+    let mut youtube_dl = std::process::Command::new("yt-dlp")
+        .args(&ytdl_args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn().unwrap();
+    let mut buf = vec![];
+    youtube_dl.stderr.unwrap().read_to_end(&mut buf);
+    dbg!(buf.iter().map(|f| f.clone() as char).collect::<String>());
+    let mut ffmpeg = std::process::Command::new("ffmpeg")
+        .args(&ffmpeg_args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn().unwrap();
+
+    let mut stdout = ffmpeg.stdout.take().unwrap();
+    use std::io::Read;
+    let mut o_vec = vec![];
+    stdout.read_to_end(&mut o_vec).unwrap();
+    dbg!(o_vec.len());
+    Ok(Input::new(
+        true,
+        songbird::input::Reader::from_memory(o_vec),
+        Codec::FloatPcm,
+        Container::Raw,
+        None,
+    ))
 }

@@ -6,9 +6,9 @@ pub mod youtube_scraper;
 pub mod utils;
 
 use std::{ time::Duration, sync::Arc };
-use tokio::sync::Mutex;
+use tokio::{ sync::Mutex, time::sleep };
 use serenity::model::channel::Message;
-use poise::{ reply::ReplyHandle, async_trait, serenity_prelude::{ChannelId, Http, Color, CreateEmbed, User} };
+use poise::{ reply::ReplyHandle, async_trait, serenity_prelude::{ChannelId, Http, User} };
 use google_youtube3::{ YouTube, hyper::client::HttpConnector, hyper_rustls::HttpsConnector };
 use rspotify::ClientCredsSpotify;
 use songbird::{ input::Metadata, tracks::TrackHandle, Call, EventContext };
@@ -16,7 +16,7 @@ use spotify_to_query::{ TrackData, extract_album_queries, extract_playlist_queri
 use youtube_api::{ extract_playlist_video_metadata, extract_video_metadata };
 use error::{ Error, LibError };
 use youtube_scraper::search;
-use utils::{create_now_playing_embed, format_duration};
+use utils::create_now_playing_embed;
 
 #[derive(Debug)]
 pub struct GeneralError {
@@ -181,7 +181,11 @@ impl songbird::events::EventHandler for MetadataEventHandler {
                         current_track.generate_lazy_metadata().await;
                         if let Some(metadata) = current_track.read_lazy_metadata().await {
                             let added_by = current_track.read_added_by().await;
-                            self.channel_id.send_message(&self.http, |message| message.set_embed(create_now_playing_embed(metadata, added_by))).await;
+                            if let Ok(message) = self.channel_id.send_message(&self.http, |message| message.set_embed(create_now_playing_embed(metadata, added_by))).await {
+                                sleep(Duration::from_secs(10)).await;
+                                message.delete(&self.http).await;
+                            }
+                            
                         }
                     }
                 }

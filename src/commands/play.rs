@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use diwa_rs::{
     Context,
     error::Error,
@@ -17,21 +19,19 @@ use serenity::utils::Color;
 
 #[poise::command(slash_command, prefix_command)]
 pub async fn play(ctx: Context<'_>, query: String) -> Result<(), Error> {
+    let now = std::time::Instant::now();
     let guild = ctx.guild();
     if let Some(guild) = guild {
         let user_voice_state = guild.voice_states.get(&ctx.author().id);
         if let Some(user_voice_state) = user_voice_state {
             let manager = songbird::get(&ctx.serenity_context()).await.unwrap();
 
-            let handler = match manager.get(guild.id) {
-                Some(handler) => handler,
-                None => manager.join(guild.id, user_voice_state.channel_id.unwrap()).await.0
-            };
-
+            let handler = manager.get_or_insert(guild.id);
             let mut handler_guard = handler.lock().await;
+            handler_guard.join(user_voice_state.channel_id.unwrap()).await?;
 
             handler_guard.add_global_event(Event::Track(TrackEvent::Play), MetadataEventHandler {handler: handler.clone(), channel_id: ctx.channel_id(), http: ctx.serenity_context().http.clone()});
-             
+            
             if user_voice_state.channel_id.map(|f| f.0) != handler_guard.current_channel().map(|f| f.0) {
                 send_error(&ctx, "You're In a Different Channel").await;
                 return Ok(());
@@ -64,13 +64,14 @@ pub async fn play(ctx: Context<'_>, query: String) -> Result<(), Error> {
                 }
                 drop(handler_guard);
                 if handles.len() > 1 {
-                    ctx.send(
+                    let reply_handle = ctx.send(
                         |msg| msg
                             .ephemeral(true)
                             .reply(true)
                             .allowed_mentions(|s| s.replied_user(true))
                             .embed(|embed| embed.title(format!("Added {} tracks", handles.len())).color(Color::PURPLE))
                     ).await?;
+                    ctx.data().delete_after_delay(reply_handle, Duration::from_secs(10)).await;
                 } else {
                     if let Some(handle) = handles.get(0) {
                         let metadata = match handle.read_lazy_metadata().await {
@@ -82,18 +83,23 @@ pub async fn play(ctx: Context<'_>, query: String) -> Result<(), Error> {
                                 MiniMetadata::lossy_from_metadata(metadata.clone())
                             }
                         };
-                        ctx.send(
+                        let reply_handle = ctx.send(
                             |msg| msg
                                 .ephemeral(true)
                                 .reply(true)
                                 .allowed_mentions(|s| s.replied_user(true))
                                 .embed(|embed| embed.title("Added track:").description(format!("[{}]({}) | {}", metadata.title, metadata.source_url, format_duration(metadata.duration, None))).color(Color::PURPLE))
                         ).await?;
+                        ctx.data().delete_after_delay(reply_handle, Duration::from_secs(10)).await;
                     }
                 }
 
                 if let Some(now_playing_embed) = now_playing_embed {
-                    ctx.send(|message| message.embed(|embed| {embed.clone_from(&now_playing_embed); embed})).await;
+                    if let Ok(reply_handle) = ctx.send(|message| message.embed(|embed| {embed.clone_from(&now_playing_embed); embed})).await {
+                        ctx.data().delete_after_delay(reply_handle, Duration::from_secs(10)).await;
+                    }
+
+
                 }
             } else {
                 send_error(&ctx, "Invalid Query").await;
@@ -101,5 +107,6 @@ pub async fn play(ctx: Context<'_>, query: String) -> Result<(), Error> {
             }
         }
     }
+    println!("all: {}ms", now.elapsed().as_millis());
     Ok(())
 }

@@ -7,10 +7,10 @@ edition = "2021"
 
 [dependencies]
 rspotify = { version = "0.11.5", features = ["env-file", "client-ureq", "ureq-rustls-tls"], default-features = false }
-tokio = { version = "1.23.0", features = ["full"] }
+tokio = { version = "*", features = ["full"] }
 dotenv = { version = "0.15.0" }
 regex = "1"
-songbird = { version = "0.3.0", features = ["driver", "builtin-queue", "yt-dlp"] }
+songbird = { version = "0.3.2", features = ["driver", "builtin-queue", "yt-dlp"] }
 poise = { version = "0.5.2", features = ["collector"] }
 serenity = { version = "0.11.5", features = ["builder", "cache", "client", "http", "model", "utils", "rustls_backend", "gateway", "voice", "rustls_backend", "collector"], default-features = false }
 rand = "0.8.5"
@@ -25,3 +25,4 @@ url = "*"
 nom = "*"
 scraper = "*"
 reqwest = "*"
+rustube = "*"

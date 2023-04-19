@@ -160,7 +160,7 @@ pub fn format_track(title: String, source_url: String, duration: Duration, play_
     formatted_track += format!("**[{}]({})** | ", title, source_url).as_str();
     let formatted_duration = format_duration(duration, None);
     if let Some(play_time) = play_time {
-        let mut formatted_play_time = format_duration(play_time, Some(formatted_duration.len() as u32));
+        let mut formatted_play_time = format_duration(Duration::from_secs(play_time.as_secs() % duration.as_secs()), Some(formatted_duration.len() as u32));
         formatted_play_time.push('/');
         formatted_track += formatted_play_time.as_str();
     }

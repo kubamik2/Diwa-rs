@@ -54,7 +54,7 @@ pub async fn song(ctx: Context<'_>) -> Result<(), Error> {
 
 async fn send_msg<'a>(ctx: &'a Context<'_>, title: String, source_url: String, play_time: Duration, duration: Duration) -> Result<ReplyHandle<'a>, Error> {
     let formatted_duration = format_duration(duration, None);
-    let formatted_play_time = format_duration(play_time, Some(formatted_duration.len() as u32));
+    let formatted_play_time = format_duration(Duration::from_secs(play_time.as_secs() % duration.as_secs()), Some(formatted_duration.len() as u32));
     let reply_handle = ctx.send(
         |msg| msg
         .ephemeral(true)

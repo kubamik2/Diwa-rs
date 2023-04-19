@@ -19,6 +19,7 @@ pub async fn leave(ctx: Context<'_>) -> Result<(), Error> {
                 
                 handler_guard.leave().await?;
                 drop(handler_guard);
+                manager.remove(guild.id).await?;
                 send_reply(&ctx, "Left The Channel").await;
             }  
         }
