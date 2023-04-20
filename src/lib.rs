@@ -11,7 +11,7 @@ use serenity::model::channel::Message;
 use poise::{ reply::ReplyHandle, async_trait, serenity_prelude::{ChannelId, Http, User} };
 use google_youtube3::{ YouTube, hyper::client::HttpConnector, hyper_rustls::HttpsConnector };
 use rspotify::ClientCredsSpotify;
-use songbird::{ input::Metadata, tracks::TrackHandle, Call, EventContext };
+use songbird::{ input::Metadata as SongbirdMetadata, tracks::TrackHandle, Call, EventContext };
 use spotify_to_query::{ TrackData, extract_album_queries, extract_playlist_queries, extract_track_query };
 use youtube_api::{ extract_playlist_video_metadata, extract_video_metadata };
 use error::{ Error, LibError };
@@ -100,50 +100,42 @@ impl Data {
 pub type Context<'a> = poise::Context<'a, Data, Error>;
 
 #[derive(Debug, Clone)]
-pub struct MiniMetadata {
-    pub title: String,
-    pub duration: Duration,
-    pub source_url: String
+pub struct Metadata {
+    pub title: Option<String>,
+    pub duration: Option<Duration>,
+    pub source_url: String,
+    pub source_id: String,
+    pub audio_url: Option<String>,
+    pub user: Option<User>,
 }
 
-impl MiniMetadata {
-    pub fn empty() -> Self {
-        Self { title: String::new(), duration: Duration::ZERO, source_url: String::new() }
-    }
-
-    pub fn lossy_from_metadata(value: Metadata) -> Self {
-        Self { title: value.title.unwrap_or("".to_owned()), duration: value.duration.unwrap_or(Duration::ZERO), source_url: value.source_url.unwrap_or("".to_owned()) }
+impl Metadata {
+    pub fn new(source_url: &str, source_id: &str) -> Self {
+        Metadata { title: None, duration: None, source_url: source_url.to_owned(), source_id: source_id.to_owned(), audio_url: None, user: None }
     }
 }
 
-impl songbird::typemap::TypeMapKey for MiniMetadata {
-    type Value = MiniMetadata;
-}
-
-impl TryFrom<Metadata> for MiniMetadata {
-    type Error = LibError;
-    fn try_from(value: Metadata) -> Result<Self, Self::Error> {
-        Ok(Self { title: value.title.ok_or(missing_value!("title"))?, duration: value.duration.ok_or(missing_value!("duration"))?, source_url: value.source_url.ok_or(missing_value!("source_url"))? })
-    }
+impl songbird::typemap::TypeMapKey for Metadata {
+    type Value = Metadata;
 }
 
 #[async_trait]
 pub trait LazyMetadataTrait {
-    async fn read_lazy_metadata(&self) -> Option<MiniMetadata>;
-    async fn write_lazy_metadata(&mut self, metadata: MiniMetadata);
+    async fn read_lazy_metadata(&self) -> Option<Metadata>;
+    async fn write_lazy_metadata(&mut self, metadata: Metadata);
     async fn generate_lazy_metadata(&mut self);
     fn is_lazy(&self) -> bool;
 }
 
 #[async_trait]
 impl LazyMetadataTrait for TrackHandle {
-    async fn read_lazy_metadata(&self) -> Option<MiniMetadata> {
-        let res = self.typemap().read().await.get::<MiniMetadata>().cloned();
+    async fn read_lazy_metadata(&self) -> Option<Metadata> {
+        let res = self.typemap().read().await.get::<Metadata>().cloned();
         res
     }
 
-    async fn write_lazy_metadata(&mut self, metadata: MiniMetadata) {
-        self.typemap().write().await.insert::<MiniMetadata>(metadata);
+    async fn write_lazy_metadata(&mut self, metadata: Metadata) {
+        self.typemap().write().await.insert::<Metadata>(metadata);
     }
 
     fn is_lazy(&self) -> bool {
@@ -155,10 +147,11 @@ impl LazyMetadataTrait for TrackHandle {
             if let Some(ref query) = self.metadata().title {
                 let (title, video_id, duration) = search(query).await;
                 let mut source_url = String::new();
-                if let Some(video_id) = video_id {
+                if let Some(source_id) = source_id {
                     source_url = format!("https://youtu.be/{}", video_id);
                 }
-                let metadata = MiniMetadata {title: title.unwrap_or(String::new()), duration: duration.unwrap_or(Duration::ZERO), source_url };
+                //let metadata = Metadata {title: title.unwrap_or(String::new()), duration: duration.unwrap_or(Duration::ZERO), source_url };
+                let metadata = Metadata { title, duration: (), source_url, source_id: (), audio_url: (), user: () }
                 self.write_lazy_metadata(metadata).await
             }
         }
